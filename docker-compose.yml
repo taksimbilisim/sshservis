@@ -1,0 +1,9 @@
+services:
+  sshservis:
+    build: .
+    ports:
+      - "3100:3100"
+    environment:
+      - TOKEN_SECRET=${TOKEN_SECRET}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-}
+    restart: unless-stopped

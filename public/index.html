@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SSH Terminal</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #0d1117; overflow: hidden; height: 100vh; display: flex; flex-direction: column; }
+    #status-bar {
+      background: #161b22; color: #8b949e; font-family: monospace; font-size: 12px;
+      padding: 6px 12px; display: flex; justify-content: space-between; align-items: center;
+      border-bottom: 1px solid #30363d;
+    }
+    #status-bar .host { color: #58a6ff; }
+    #status-bar .status { padding: 2px 8px; border-radius: 10px; font-size: 11px; }
+    #status-bar .status.connected { background: #238636; color: #fff; }
+    #status-bar .status.connecting { background: #d29922; color: #000; }
+    #status-bar .status.error { background: #da3633; color: #fff; }
+    #terminal { flex: 1; }
+    #error-screen {
+      display: none; position: absolute; inset: 0; background: #0d1117;
+      color: #f85149; font-family: monospace; justify-content: center; align-items: center;
+      flex-direction: column; gap: 12px; font-size: 14px;
+    }
+    #error-screen.show { display: flex; }
+  </style>
+</head>
+<body>
+  <div id="status-bar">
+    <span>SSH: <span id="host-label" class="host">-</span></span>
+    <span id="status-label" class="status connecting">Bağlanıyor...</span>
+  </div>
+  <div id="terminal"></div>
+  <div id="error-screen">
+    <div id="error-message"></div>
+    <div style="color: #8b949e; font-size: 12px;">Token süresi dolmuş veya bağlantı bilgileri hatalı olabilir.</div>
+  </div>
+
+  <script type="module">
+    import { Terminal } from 'https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/+esm';
+    import { FitAddon } from 'https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/+esm';
+    import { WebLinksAddon } from 'https://cdn.jsdelivr.net/npm/@xterm/addon-web-links@0.11.0/+esm';
+
+    const params = new URLSearchParams(window.location.search);
+    const token = params.get('token');
+
+    if (!token) {
+      document.getElementById('error-screen').classList.add('show');
+      document.getElementById('error-message').textContent = 'Token bulunamadı.';
+      throw new Error('No token');
+    }
+
+    // Decode token to show host info (non-sensitive parts)
+    try {
+      const decoded = JSON.parse(atob(token.replace(/-/g,'+').replace(/_/g,'/')));
+      document.getElementById('host-label').textContent = `${decoded.user}@${decoded.host}:${decoded.port}`;
+    } catch {}
+
+    const term = new Terminal({
+      theme: {
+        background: '#0d1117',
+        foreground: '#c9d1d9',
+        cursor: '#58a6ff',
+        selection: '#264f78',
+        black: '#484f58', red: '#ff7b72', green: '#3fb950', yellow: '#d29922',
+        blue: '#58a6ff', magenta: '#bc8cff', cyan: '#39d353', white: '#b1bac4',
+      },
+      fontFamily: '"Cascadia Code", "Fira Code", "JetBrains Mono", monospace',
+      fontSize: 14,
+      cursorBlink: true,
+      scrollback: 10000,
+    });
+
+    const fitAddon = new FitAddon();
+    term.loadAddon(fitAddon);
+    term.loadAddon(new WebLinksAddon());
+    term.open(document.getElementById('terminal'));
+    fitAddon.fit();
+
+    window.addEventListener('resize', () => fitAddon.fit());
+
+    const statusLabel = document.getElementById('status-label');
+
+    // WebSocket connection
+    const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const ws = new WebSocket(`${wsProtocol}//${location.host}/ws?token=${token}`);
+
+    ws.onopen = () => {
+      term.write('\r\n  Bağlanıyor...\r\n\r\n');
+    };
+
+    ws.onmessage = (event) => {
+      const msg = JSON.parse(event.data);
+
+      if (msg.type === 'status' && msg.message === 'connected') {
+        statusLabel.textContent = 'Bağlı';
+        statusLabel.className = 'status connected';
+        term.clear();
+      }
+
+      if (msg.type === 'data') {
+        term.write(Uint8Array.from(atob(msg.data), c => c.charCodeAt(0)));
+      }
+
+      if (msg.type === 'error') {
+        statusLabel.textContent = 'Hata';
+        statusLabel.className = 'status error';
+        term.write(`\r\n\x1b[31m${msg.message}\x1b[0m\r\n`);
+      }
+    };
+
+    ws.onclose = () => {
+      statusLabel.textContent = 'Bağlantı kesildi';
+      statusLabel.className = 'status error';
+      term.write('\r\n\x1b[33mBağlantı kesildi.\x1b[0m\r\n');
+    };
+
+    ws.onerror = () => {
+      document.getElementById('error-screen').classList.add('show');
+      document.getElementById('error-message').textContent = 'WebSocket bağlantı hatası.';
+    };
+
+    // Terminal input → SSH
+    term.onData((data) => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'data', data: btoa(data) }));
+      }
+    });
+
+    // Terminal resize → SSH
+    term.onResize(({ cols, rows }) => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'resize', cols, rows }));
+      }
+    });
+
+    // Initial fit after fonts load
+    setTimeout(() => fitAddon.fit(), 100);
+  </script>
+</body>
+</html>
